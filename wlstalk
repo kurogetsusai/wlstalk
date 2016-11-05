@@ -1,0 +1,174 @@
+#!/bin/bash
+
+source config.sh
+
+function log() {
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> wlstalk.log
+}
+
+log "$(echo Running $0 $@)"	# it doesn't work without echo
+
+action=$1
+
+case "$action" in
+'list')
+	ls -1 "$rootDir"
+	;;
+'add')
+	clanName=$2
+	clanId=$3
+
+	# validate
+	if [ -z "$clanName" ]
+	then
+		echo 'Clan name cannot be empty!'
+		log 'Clan name cannot be empty!'
+	elif [ -e "$rootDir/$clanName" ]
+	then
+		echo "Clan $clanName already exists!"
+		log "Clan $clanName already exists!"
+	elif [ -z "$clanId" ]
+	then
+		echo 'Clan ID cannot be empty!'
+		log 'Clan ID cannot be empty!'
+	else
+		# add new dir and the ID file
+		mkdir -p "$rootDir/$clanName"
+		echo $clanId > "$rootDir/$clanName/id"
+		echo "Clan $clanName (ID: $clanId) added."
+		log "Clan $clanName (ID: $clanId) added."
+	fi
+	;;
+'update')
+	clanName=$2
+	if [ -z "$clanName" ]
+	then
+		echo 'Clan name cannot be empty!'
+		log 'Clan name cannot be empty!'
+	elif [ ! -d "$rootDir/$clanName" ]
+	then
+		echo "Clan $clanName doesn't exist!"
+		log "Clan $clanName doesn't exist!"
+	else
+		clanId=$(cat "$rootDir/$clanName/id")
+		clanLink="https://www.warlight.net/clans/?ID=$clanId"
+		clanPageTimestamp=$(date +%s)
+		clanPageFileName="$rootDir/$clanName/$pageDir/clan-$clanPageTimestamp.html"
+
+		if [ ! -d "$rootDir/$clanName/$pageDir" ]
+		then
+			mkdir -p "$rootDir/$clanName/$pageDir"
+		fi
+
+		# download the clan page
+#		--directory-prefix="$rootDir/$clanName/$pageDir/"
+		wget --user-agent="Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:43.0) Gecko/20100101 Firefox/43.0" \
+		--referer="https://www.warlight.net/" \
+		--output-document="$clanPageFileName" \
+		"$clanLink"
+
+		# parse that shit
+		dataClanImage=$(grep -B6 -m1 'href="/Report?pid=73585">Report</a>' "$clanPageFileName" | head -n1 | cut -d'"' -f6)
+		data=$(grep -A99999 -m1 '<h1>Clan:' "$clanPageFileName" | grep -B99999 -m1 '</table>')
+
+		dataClanName=$(echo "$data" | grep -m1 '<h1>Clan:' | cut -d'>' -f2- | rev | cut -d'<' -f2- | rev | cut -d' ' -f2-)
+		dataClanMemberCount=$(echo "$data" | grep -m1 '<font color="#858585">Number of members:</font>' | cut -d'>' -f3- | rev | cut -d'<' -f2- | rev | cut -d' ' -f2-)
+		dataClanLink=$(echo "$data" | grep -m1 '<font color="#858585">Link:</font>' | cut -d'>' -f4- | rev | cut -d'<' -f3- | rev | cut -d' ' -f2-)
+		dataClanTagline=$(echo "$data" | grep -m1 '<font color="#858585">Tagline:</font>' | cut -d'>' -f3- | rev | cut -d'<' -f2- | rev | cut -d' ' -f2-)
+		dataClanCreated=$(echo "$data" | grep -m1 '<font color="#858585">Created:</font>' | cut -d'>' -f3- | rev | cut -d'<' -f2- | rev | cut -d' ' -f2-)
+		dataClanCreated=$(date +%Y-%m-%d -d "$dataClanCreated")
+		dataClanBio=$(echo "$data" | grep -m1 '<font color="#858585">Bio:</font>' | cut -d'>' -f3- | rev | cut -d'<' -f3- | cut -d' ' -f2- | rev | cut -d' ' -f3-)
+		dataClanBio="${dataClanBio//<br>/\\n}"
+		dataClanBio=$(echo "$dataClanBio" | perl -C -MHTML::Entities -pe 'decode_entities($_);')
+		dataClanBio=${dataClanBio//\"/\\\"} # gedit syntax coloring workaround: "}
+		dataMembers="$(echo "$data" | grep -A1 '<td><a href=\"/Profile?')"
+		dataMembers=${dataMembers//<\/td>
+                                        <td>/<\/td><td>}
+		dataMembers=${dataMembers//
+--/}
+
+		# build JSON (1/3)
+		jsonClan='{
+	"_updated": '"$clanPageTimestamp"',
+	"id": '"$clanId"',
+	"imageUrl": "'"$dataClanImage"'",
+	"name": "'"$dataClanName"'",
+	"memberCount": '"$dataClanMemberCount"',
+	"link": "'"$dataClanLink"'",
+	"tagline": "'"$dataClanTagline"'",
+	"created": "'"$dataClanCreated"'",
+	"bio": "'"$dataClanBio"'",
+	"members": ['
+
+		first=true
+		# download and parse members
+		while read -r line
+		do
+			memberAddress='https://www.warlight.net'$(echo "$line" | cut -d'"' -f2)
+			memberId=$(echo "$memberAddress" | cut -d'=' -f2)
+			if [[ "$line" == *"<img src="* ]]
+			then
+				memberName=$(echo "$line" | cut -d'>' -f3- | rev | cut -d'<' -f6- | rev)
+				memberPaid=true
+			else
+				memberName=$(echo "$line" | cut -d'>' -f3- | rev | cut -d'<' -f5- | rev)
+				memberPaid=false
+			fi
+			memberName=$(echo "$memberName" | perl -C -MHTML::Entities -pe 'decode_entities($_);')
+			memberName=${memberName//\"/\\\"} # gedit syntax coloring workaround: "}
+			memberTitle=$(echo "$line" | rev | cut -d'<' -f2- | cut -d'>' -f1 | rev)
+			memberTitle=$(echo "$memberTitle" | perl -C -MHTML::Entities -pe 'decode_entities($_);')
+			memberTitle=${memberTitle//\"/\\\"} # gedit syntax coloring workaround: "}
+
+			# build JSON (2/3)
+			if [[ "$first" == 'true' ]]
+			then
+				first=false
+			else
+				jsonClan="$jsonClan,"
+			fi
+
+			jsonClan="$jsonClan"'
+		{
+			"_updated": 0,
+			"id": '"$memberId"',
+			"name": "'"$memberName"'",
+			"clanTitle": "'"$memberTitle"'",
+			"isMember": '"$memberPaid"'
+		}'
+#			break
+		done <<< "$dataMembers"
+
+		# build JSON (3/3)
+		jsonClan="$jsonClan"'
+	]
+}'
+
+		# save JSON
+		if [ ! -d "$rootDir/$clanName/$jsonDir" ]
+		then
+			mkdir -p "$rootDir/$clanName/$jsonDir"
+		fi
+		echo "$jsonClan" > "$rootDir/$clanName/$jsonDir/clan-$clanPageTimestamp.json"
+#		echo "$jsonClan"
+	fi
+	;;
+*):
+	echo "Usage: wlstalk [OPTION] [PARAMETERS]
+Downloads Warlight clan's page, extracts the data and saves it to a JSON file.
+
+Options:
+  list
+      lists currently stalked clans
+  add [clan name] [clan ID]
+      adds a clan to the stalk list,
+      [clan name] doesn't need to be the actual name, it's just a name of the
+      directory in which all the data for that clan will be stored,
+      [clan ID] is the ID of the clan, you can find it in the clan page's
+      address, eg. TJC's addres is https://www.warlight.net/clans/?ID=94, so the
+      ID is 94
+  update [clan name]
+      updates the data of the specified clan,
+      [clan name] has the same meaning as used with the \"add\" option"
+	;;
+esac
