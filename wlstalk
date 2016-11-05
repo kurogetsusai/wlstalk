@@ -68,7 +68,7 @@ case "$action" in
 		"$clanLink"
 
 		# parse that shit
-		dataClanImage=$(grep -B6 -m1 'href="/Report?pid=73585">Report</a>' "$clanPageFileName" | head -n1 | cut -d'"' -f6)
+		dataClanImage=$(grep -B6 -m1 'href="/Report?pid=' "$clanPageFileName" | head -n1 | cut -d'"' -f6)
 		data=$(grep -A99999 -m1 '<h1>Clan:' "$clanPageFileName" | grep -B99999 -m1 '</table>')
 
 		dataClanName=$(echo "$data" | grep -m1 '<h1>Clan:' | cut -d'>' -f2- | rev | cut -d'<' -f2- | rev | cut -d' ' -f2-)
